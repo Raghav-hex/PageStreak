@@ -60,6 +60,7 @@ export default function EpubReader({ book, onClose, onProgress }) {
           spread: 'none',
           flow: 'paginated',
           manager: 'default',
+          allowScriptedContent: true,
         })
         renditionRef.current = rendition
 
