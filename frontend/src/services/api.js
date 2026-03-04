@@ -1,7 +1,13 @@
 import axios from 'axios'
 
+// On Render static sites, we need the full backend URL
+// In dev, falls back to relative /api (via Vite proxy)
+const BASE_URL = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : '/api'
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 })
 
@@ -47,7 +53,7 @@ export const booksApi = {
   },
   list: (status = 'active') => api.get('/books/', { params: { status } }),
   get: (id) => api.get(`/books/${id}`),
-  cover: (id) => `/api/books/${id}/cover`,
+  cover: (id) => `${BASE_URL}/books/${id}/cover`,
   chunk: (bookId, chunkIndex) => api.get(`/books/${bookId}/chunks/${chunkIndex}`),
   toc: (bookId) => api.get(`/books/${bookId}/toc`),
   markComplete: (id) => api.post(`/books/${id}/complete`),
@@ -57,7 +63,11 @@ export const booksApi = {
 // ── Reading ────────────────────────────────────────────────────────────────────
 export const readingApi = {
   updateProgress: (bookId, chunkIndex, timeSpentSeconds = 0) =>
-    api.post('/reading/progress', { book_id: bookId, chunk_index: chunkIndex, time_spent_seconds: timeSpentSeconds }),
+    api.post('/reading/progress', {
+      book_id: bookId,
+      chunk_index: chunkIndex,
+      time_spent_seconds: timeSpentSeconds,
+    }),
   dashboard: () => api.get('/reading/dashboard'),
   bookStats: (bookId) => api.get(`/reading/books/${bookId}/stats`),
 }
