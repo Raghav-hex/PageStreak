@@ -7,7 +7,8 @@ Uses pdfminer for PDF text extraction (treated like EPUB chunks).
 import io
 import re
 import base64
-import zipfile
+import tempfile
+import os
 import logging
 from typing import Optional, Tuple, List, Dict, Any
 from PIL import Image
@@ -15,7 +16,6 @@ from PIL import Image
 import ebooklib
 from ebooklib import epub
 from pdfminer.high_level import extract_text as pdf_extract_text
-from pdfminer.high_level import extract_pages
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
@@ -25,12 +25,10 @@ WORDS_PER_PAGE = 400   # 2 chunks = 1 page
 
 
 def count_words(text: str) -> int:
-    """Count words in a string."""
     return len(re.findall(r'\b\w+\b', text))
 
 
 def extract_text_from_html(html: str) -> str:
-    """Extract plain text from HTML for word counting."""
     soup = BeautifulSoup(html, "lxml")
     return soup.get_text(separator=" ")
 
@@ -39,21 +37,24 @@ def extract_text_from_html(html: str) -> str:
 
 def process_epub(file_bytes: bytes) -> Dict[str, Any]:
     """
-    Process an EPUB file and extract:
-    - Spine items (chapters) as raw HTML — preserving original formatting
-    - Embedded assets (fonts, images, CSS) as base64
-    - Cover image
-    - Table of contents
-    - Total word count → pages/chunks
+    Process an EPUB file using a temp file (ebooklib requires a path, not BytesIO).
+    Extracts spine HTML, assets, cover, TOC, and builds 200-word chunks.
     """
-    book = epub.read_epub(io.BytesIO(file_bytes))
+    # Write to temp file — ebooklib requires a real file path
+    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        book = epub.read_epub(tmp_path)
+    finally:
+        os.unlink(tmp_path)  # Always clean up
 
     spine_items: List[Dict] = []
     total_words = 0
-    toc = []
-    assets: Dict[str, str] = {}  # href → base64
+    assets: Dict[str, Any] = {}
 
-    # Extract all non-spine items (fonts, images, CSS) as assets
+    # Extract all non-spine assets (fonts, images, CSS) as base64
     for item in book.get_items():
         if item.get_type() in (
             ebooklib.ITEM_IMAGE,
@@ -113,7 +114,6 @@ def process_epub(file_bytes: bytes) -> Dict[str, Any]:
     cover_bytes = None
     cover_mime = None
     try:
-        # Try metadata cover
         cover_id = None
         for meta in book.metadata.get("http://www.idpf.org/2007/opf", {}).get("meta", []):
             if meta[1].get("name") == "cover":
@@ -127,7 +127,6 @@ def process_epub(file_bytes: bytes) -> Dict[str, Any]:
                 cover_mime = cover_item.media_type
 
         if not cover_bytes:
-            # Fallback: first image in book
             for item in book.get_items_of_type(ebooklib.ITEM_IMAGE):
                 cover_bytes = item.get_content()
                 cover_mime = item.media_type
@@ -135,9 +134,8 @@ def process_epub(file_bytes: bytes) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"Cover extraction failed: {e}")
 
-    # Build chunks across the entire spine — flows freely across chapters
+    # Build chunks across entire spine
     chunks = build_chunks_from_spine(spine_items)
-
     total_chunks = len(chunks)
     total_pages = max(1, total_words // WORDS_PER_PAGE)
 
@@ -149,46 +147,37 @@ def process_epub(file_bytes: bytes) -> Dict[str, Any]:
         "total_pages": total_pages,
         "cover_bytes": cover_bytes,
         "cover_mime": cover_mime,
-        "chunks": chunks,         # List of {index, html, word_count}
+        "chunks": chunks,
         "toc": toc,
-        "assets": assets,         # All fonts/images/css keyed by href
+        "assets": assets,
         "spine_items": [{"id": s["id"], "name": s["name"]} for s in spine_items],
     }
 
 
 def build_chunks_from_spine(spine_items: List[Dict]) -> List[Dict]:
-    """
-    Split spine items into ~200-word HTML chunks.
-    Chunks flow freely across chapter boundaries for consistent size.
-    Splitting is done at sentence boundaries where possible.
-    """
+    """Split spine into ~200-word HTML chunks, flowing freely across chapters."""
     chunks = []
     chunk_index = 0
-
-    # Collect all paragraphs/blocks across the spine
     all_blocks = []
+
     for item in spine_items:
         soup = BeautifulSoup(item["html"], "lxml")
-        # Get body content
         body = soup.find("body") or soup
         blocks = body.find_all(
-            ["p", "h1", "h2", "h3", "h4", "h5", "h6", "div", "section", "blockquote", "li"],
-            recursive=False
+            ["p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "li"],
         )
         if not blocks:
-            # Fallback: use all text-containing tags
-            blocks = body.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6"])
+            blocks = body.find_all(True)
 
         for block in blocks:
             text = block.get_text(separator=" ").strip()
-            if text:
+            if text and len(text) > 10:
                 all_blocks.append({
                     "html": str(block),
                     "text": text,
                     "word_count": count_words(text),
                 })
 
-    # Group blocks into ~200-word chunks
     current_html_parts = []
     current_word_count = 0
 
@@ -206,7 +195,7 @@ def build_chunks_from_spine(spine_items: List[Dict]) -> List[Dict]:
             current_html_parts = []
             current_word_count = 0
 
-    # Don't lose the last partial chunk
+    # Last partial chunk
     if current_html_parts:
         chunks.append({
             "index": chunk_index,
@@ -214,12 +203,22 @@ def build_chunks_from_spine(spine_items: List[Dict]) -> List[Dict]:
             "word_count": current_word_count,
         })
 
+    # Safety: if no chunks extracted at all, make one placeholder
+    if not chunks:
+        chunks.append({
+            "index": 0,
+            "html": "<p>Could not extract text content from this EPUB.</p>",
+            "word_count": 0,
+        })
+
     return chunks
 
 
 def _get_author(book: epub.EpubBook) -> Optional[str]:
     try:
-        creators = book.metadata.get("http://purl.org/dc/elements/1.1/", {}).get("creator", [])
+        creators = book.metadata.get(
+            "http://purl.org/dc/elements/1.1/", {}
+        ).get("creator", [])
         if creators:
             return str(creators[0][0])
     except Exception:
@@ -230,13 +229,22 @@ def _get_author(book: epub.EpubBook) -> Optional[str]:
 # ── PDF Processing ─────────────────────────────────────────────────────────────
 
 def process_pdf(file_bytes: bytes) -> Dict[str, Any]:
-    """
-    Extract text from PDF and build chunks identical to EPUB flow.
-    PDFs are rendered as text chunks — no original layout preservation.
-    """
-    text = pdf_extract_text(io.BytesIO(file_bytes))
-    if not text:
-        raise ValueError("Could not extract text from PDF. File may be scanned/image-only.")
+    """Extract text from PDF and build chunks identical to EPUB flow."""
+    # pdfminer also works better with a temp file for large PDFs
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        text = pdf_extract_text(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    if not text or not text.strip():
+        raise ValueError(
+            "Could not extract text from PDF. "
+            "File may be scanned/image-only or password protected."
+        )
 
     total_words = count_words(text)
     chunks = _split_text_to_chunks(text)
@@ -260,7 +268,6 @@ def process_pdf(file_bytes: bytes) -> Dict[str, Any]:
 
 def _split_text_to_chunks(text: str) -> List[Dict]:
     """Split plain text into ~200-word HTML chunks at sentence boundaries."""
-    # Split into sentences
     sentences = re.split(r'(?<=[.!?])\s+', text)
     chunks = []
     chunk_index = 0
@@ -297,7 +304,6 @@ def _split_text_to_chunks(text: str) -> List[Dict]:
 # ── Unified entry point ────────────────────────────────────────────────────────
 
 def process_book(file_bytes: bytes, file_type: str) -> Dict[str, Any]:
-    """Process EPUB or PDF and return unified result dict."""
     if file_type == "epub":
         return process_epub(file_bytes)
     elif file_type == "pdf":
@@ -307,7 +313,6 @@ def process_book(file_bytes: bytes, file_type: str) -> Dict[str, Any]:
 
 
 def resize_cover(cover_bytes: bytes, max_size: Tuple[int, int] = (400, 600)) -> bytes:
-    """Resize cover image to reasonable dimensions."""
     try:
         img = Image.open(io.BytesIO(cover_bytes))
         img.thumbnail(max_size, Image.LANCZOS)
