@@ -40,7 +40,8 @@ export default function EpubReader({ book, onClose, onProgress }) {
     const initReader = async () => {
       try {
         // Fetch file blob from backend (serve as arraybuffer)
-        const response = await fetch(`/api/books/${book.id}/file`, {
+        const BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api'
+        const response = await fetch(`${BASE}/books/${book.id}/file`, {
           headers: { Authorization: `Bearer ${localStorage.getItem('ps_token')}` },
         })
         if (!response.ok) throw new Error('Failed to load book file')
