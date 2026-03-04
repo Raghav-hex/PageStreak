@@ -1,0 +1,16 @@
+[build]
+  base = "frontend"
+  command = "npm install && npm run build && echo \"/api/* $VITE_API_URL/api/:splat 200\" > dist/_redirects"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback — all routes serve index.html
+# NOTE: /api/* is handled by the dynamically generated dist/_redirects (above),
+# which proxies to Railway using VITE_API_URL. That file takes priority over
+# these static rules for the /api path.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
