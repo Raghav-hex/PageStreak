@@ -41,14 +41,22 @@ def process_epub(file_bytes: bytes) -> Dict[str, Any]:
     Extracts spine HTML, assets, cover, TOC, and builds 200-word chunks.
     """
     # Write to temp file — ebooklib requires a real file path
-    with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-
+    # mkstemp gives us a file descriptor — we close it before ebooklib reads
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".epub")
     try:
-        book = epub.read_epub(tmp_path)
+        with os.fdopen(tmp_fd, "wb") as tmp:
+            tmp.write(file_bytes)
+        # File fully closed and flushed — safe for ebooklib now
+        try:
+            book = epub.read_epub(tmp_path)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to parse EPUB ({e}). "
+                "The file may be DRM-protected, corrupted, or not a valid EPUB."
+            )
     finally:
-        os.unlink(tmp_path)  # Always clean up
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
     spine_items: List[Dict] = []
     total_words = 0
@@ -231,14 +239,14 @@ def _get_author(book: epub.EpubBook) -> Optional[str]:
 def process_pdf(file_bytes: bytes) -> Dict[str, Any]:
     """Extract text from PDF and build chunks identical to EPUB flow."""
     # pdfminer also works better with a temp file for large PDFs
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
     try:
+        with os.fdopen(tmp_fd, "wb") as tmp:
+            tmp.write(file_bytes)
         text = pdf_extract_text(tmp_path)
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
     if not text or not text.strip():
         raise ValueError(
