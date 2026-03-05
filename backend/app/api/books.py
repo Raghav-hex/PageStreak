@@ -9,7 +9,7 @@ from app.core.security import get_current_user
 from app.core.config import settings
 from app.models.user import Book, ReadingState, FileType, BookStatus
 from app.schemas.schemas import BookOut, BookWithProgress
-from app.services.book_processor import process_book, resize_cover
+from app.services.book_processor import process_book, process_book_cached, resize_cover
 
 router = APIRouter(prefix="/books", tags=["books"])
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def get_chunk(
 ):
     book = _get_user_book(book_id, current_user.id, db)
     try:
-        result = process_book(book.file_blob, book.file_type.value)
+        result = process_book_cached(book.id, book.file_blob, book.file_type.value)
         chunks = result["chunks"]
         assets = result.get("assets", {})
         toc = result.get("toc", [])
@@ -201,7 +201,7 @@ def get_chunk(
 def get_toc(book_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     book = _get_user_book(book_id, current_user.id, db)
     try:
-        result = process_book(book.file_blob, book.file_type.value)
+        result = process_book_cached(book.id, book.file_blob, book.file_type.value)
         return {"toc": result.get("toc", [])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
