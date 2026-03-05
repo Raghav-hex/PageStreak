@@ -26,8 +26,18 @@ export default function PDFReader({ book, onClose, onProgress }) {
   const [html, setHtml]               = useState('')
   const [loading, setLoading]         = useState(true)
   const [pagesReadToday, setPRT]      = useState(0)
+  const [dailyTarget, setDailyTarget] = useState(10)
   const [targetHit, setTargetHit]     = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+
+  // Fetch today's pages on mount — don't start from 0
+  useEffect(() => {
+    readingApi.dashboard().then(res => {
+      setPRT(res.data.pages_today)
+      setTargetHit(res.data.target_hit)
+      setDailyTarget(res.data.daily_target || 10)
+    }).catch(() => {})
+  }, [])
 
   // Fetch chunk (with cache)
   const fetchChunk = useCallback(async (idx) => {
@@ -69,6 +79,7 @@ export default function PDFReader({ book, onClose, onProgress }) {
       const res = await readingApi.updateProgress(book.id, next, timeSpent)
       setPRT(res.data.pages_read_today)
       setTargetHit(res.data.target_hit)
+      if (res.data.daily_target) setDailyTarget(res.data.daily_target)
       if (onProgress) onProgress(res.data)
     } catch (e) { console.error(e) }
   }, [chunkIndex, totalChunks, book.id, onProgress])
@@ -101,7 +112,7 @@ export default function PDFReader({ book, onClose, onProgress }) {
       <ReaderToolbar
         book={book}
         chunkIndex={chunkIndex} totalChunks={totalChunks}
-        pagesReadToday={pagesReadToday} targetHit={targetHit}
+        pagesReadToday={pagesReadToday} dailyTarget={dailyTarget} targetHit={targetHit}
         theme={theme} onThemeChange={v => { setTheme(v); localStorage.setItem('ps_theme', v) }}
         fontSize={fontSize} onFontSizeChange={v => { setFontSize(v); localStorage.setItem('ps_fontsize', v) }}
         columnWidth={680} onColumnWidthChange={() => {}}
